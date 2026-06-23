@@ -35,6 +35,22 @@ defaults = {
 }
 defaults.update(config.get("settings", {}))
 
+# Filter ORT providers: try GPU first, fall back to CPU. Excludes AzureExecutionProvider (deprecated shim)
+# and TensorrtExecutionProvider (crashes without full NVIDIA TensorRT SDK installed).
+_ORT_BLOCKLIST = {"AzureExecutionProvider", "TensorrtExecutionProvider"}
+available_providers = set(onnxruntime.get_available_providers())
+_ORT_PRIORITY = [
+    "CUDAExecutionProvider",
+    "ROCMExecutionProvider",
+    "DmlExecutionProvider",
+    "CoreMLExecutionProvider",
+    "OpenVINOExecutionProvider",
+    "CPUExecutionProvider",
+]
+defaults["ortProviders"] = [p for p in _ORT_PRIORITY if p in available_providers and p not in _ORT_BLOCKLIST]
+if not defaults["ortProviders"]:
+    defaults["ortProviders"] = ["CPUExecutionProvider"]
+
 if "wd14_tagger" in folder_paths.folder_names_and_paths:
     models_dir = folder_paths.get_folder_paths("wd14_tagger")[0]
     if not os.path.exists(models_dir):
@@ -148,6 +164,107 @@ def camie_tag(camie_model: InferenceSession, img):
     return result
 
 
+def cl_tagger_v2_tag(cl_model: InferenceSession, img: Image.Image):
+    img_input = cl_model.get_inputs()[0]
+    (batch_size, channel, height, width) = img_input.shape
+
+    # SigLIP2 preprocessing: direct resize to 384x384, normalize mean=std=0.5
+    img = img.convert("RGB").resize((width, height), Image.Resampling.BICUBIC)
+
+    img_numpy = np.asarray(img, dtype=np.float32) / 255.0
+    img_numpy = (img_numpy - 0.5) / 0.5
+    img_numpy = img_numpy.transpose(2, 0, 1)[None]  # [1, 3, H, W]
+
+    logits_name = cl_model.get_outputs()[0].name
+    logits = cl_model.run([logits_name], {img_input.name: img_numpy})[0]
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    result = probs[0]
+
+    return result
+
+
+def cl_tagger_v1_tag(cl_model: InferenceSession, img: Image.Image):
+    img_input = cl_model.get_inputs()[0]
+    input_shape = img_input.shape
+
+    # Detect layout from raw shape (may contain strings for dynamic dims)
+    # NCHW: [batch, 3, H, W]   NHWC: [batch, H, W, 3]
+    is_nchw = len(input_shape) == 4 and input_shape[1] == 3
+    is_nhwc = len(input_shape) == 4 and input_shape[3] == 3
+
+    # Determine target size, fall back to 448
+    target_size = 448
+    if is_nchw:
+        for idx in (3, 2):  # prefer W, then H
+            if isinstance(input_shape[idx], int):
+                target_size = input_shape[idx]
+                break
+    elif is_nhwc:
+        for idx in (2, 1):  # prefer W, then H
+            if isinstance(input_shape[idx], int):
+                target_size = input_shape[idx]
+                break
+
+    # Pad to square with white (same as wd-eva02-large-tagger-v3 preprocessing)
+    width, height = img.size
+    if width != height:
+        new_size = max(width, height)
+        new_img = Image.new("RGB", (new_size, new_size), (255, 255, 255))
+        paste_x = (new_size - width) // 2
+        paste_y = (new_size - height) // 2
+        new_img.paste(img, (paste_x, paste_y))
+        img = new_img
+
+    # Resize to target size
+    img = img.resize((target_size, target_size), Image.Resampling.BICUBIC)
+
+    img_numpy = np.asarray(img, dtype=np.float32) / 255.0
+    img_numpy = img_numpy[:, :, ::-1]  # RGB -> BGR
+
+    if is_nchw:
+        img_numpy = img_numpy.transpose(2, 0, 1)  # HWC -> CHW
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+    else:
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+
+    img_numpy = (img_numpy - mean) / std
+    img_numpy = np.expand_dims(img_numpy, 0)  # [1, C, H, W] or [1, H, W, C]
+
+    logits_name = cl_model.get_outputs()[0].name
+    logits = cl_model.run([logits_name], {img_input.name: img_numpy})[0]
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    result = probs[0]
+
+    return result
+
+
+def _format_tags(tag_list, trailing_comma=False):
+    if not tag_list:
+        return ""
+    res = ("" if trailing_comma else ", ").join((tag.replace(
+        "(", "\\(").replace(")", "\\)") + (", " if trailing_comma else "") for tag in tag_list))
+    return res
+
+
+def _pick_top_rating(df):
+    """Pick the single highest-probability tag from rating category (1)."""
+    rating_rows = df[(df['category'] == 1) & (df['probs'] > 0)]
+    if rating_rows.empty:
+        return ""
+    top = rating_rows.loc[rating_rows['probs'].idxmax()]
+    return top['name']
+
+
+# Category convention for model loaders:
+#   0 = general (descriptive tags, shown in general_tags)
+#   1 = rating  (4 tags: safe/sensitive/questionable/explicit, shown in rating output)
+#   2 = quality (4 tags: best/normal/bad/worst, excluded from general/character)
+#   3 = meta    (metadata / model info, excluded from general/character)
+#   4 = character (character/copyright/artist, shown in character_tags)
+
+
 def get_tag(probs, tags_df: pd.DataFrame, threshold=0.35, character_threshold=0.85, trailing_comma=False, sort_tags=False, exclude_tags=""):
     df = tags_df.assign(probs=probs)
     if sort_tags:
@@ -155,15 +272,25 @@ def get_tag(probs, tags_df: pd.DataFrame, threshold=0.35, character_threshold=0.
 
     general = df[(df['category'] == 0) & (df['probs'] > threshold)]['name'].to_list()
     character = df[(df['category'] == 4) & (df['probs'] > character_threshold)]['name'].to_list()
+    rating = _pick_top_rating(df)
+
+    remove = [s.strip() for s in exclude_tags.lower().split(",")] if exclude_tags else []
+
+    def _apply_exclude(tag_list):
+        if not remove:
+            return tag_list
+        return [tag for tag in tag_list if tag.lower() not in remove]
+
+    character = _apply_exclude(character)
+    general = _apply_exclude(general)
     tags = character + general
 
-    remove = [s.strip() for s in exclude_tags.lower().split(",")]
-    tags = [tag for tag in tags if tag not in remove]
-
-    res = ("" if trailing_comma else ", ").join((tag.replace(
-        "(", "\\(").replace(")", "\\)") + (", " if trailing_comma else "") for tag in tags))
-
-    return res
+    return {
+        "combined": _format_tags(tags, trailing_comma),
+        "rating": rating,
+        "character": _format_tags(character, trailing_comma),
+        "general": _format_tags(general, trailing_comma),
+    }
 
 
 async def download_model(model, client_id, node):
@@ -179,18 +306,28 @@ async def download_model(model, client_id, node):
 
     model_path = config["model_path"].get(model, "model.onnx")
     metadata_path = config["metadata_path"].get(model, "selected_tags.csv")
+    external_data_path = config.get("external_data_path", {}).get(model, None)
 
-    async with aiohttp.ClientSession(loop=asyncio.get_event_loop()) as session:
+    # Support HF token for gated models (set HF_TOKEN environment variable)
+    hf_token = os.getenv("HF_TOKEN", os.getenv("HUGGINGFACE_TOKEN"))
+    headers = {}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+
+    async with aiohttp.ClientSession(loop=asyncio.get_event_loop(), headers=headers) as session:
         async def update_callback(perc):
             nonlocal client_id
-            # message = ""
-            # if perc < 100:
-            #     message = f"Downloading {model}"
-            # update_node_status(client_id, node, message, perc)
 
         try:
             await download_to_file(
                 f"{url}/{model_path}", os.path.join(models_dir, f"{model}.onnx"), update_callback, session=session)
+
+            # Download external data file if the model uses it (e.g. cl_tagger_v2 with model.onnx.data)
+            if external_data_path:
+                ext_data_dest = os.path.join(models_dir, f"{model}.onnx.data")
+                log(f"Downloading external data file for {model}...", "INFO", True)
+                await download_to_file(
+                    f"{url}/{external_data_path}", ext_data_dest, update_callback, session=session)
 
             ext = metadata_path.split('.')[-1]
             await download_to_file(
@@ -199,8 +336,16 @@ async def download_model(model, client_id, node):
         except aiohttp.ClientConnectorError as err:
             log("Unable to download model. Download files manually or try using a HF mirror/proxy website by setting the environment variable HF_ENDPOINT=https://.....", "ERROR", True)
             raise
-
-        # update_node_status(client_id, node, None)
+        except aiohttp.ClientError as err:
+            status = getattr(err, 'status', None)
+            if status == 401:
+                log(f"Authentication required for {model}. Set the HF_TOKEN environment variable with your HuggingFace token.", "ERROR", True)
+            else:
+                log(f"Download failed: {err}", "ERROR", True)
+            raise
+        except Exception as err:
+            log(f"Download failed: {err}", "ERROR", True)
+            raise
 
     return web.Response(status=200)
 
@@ -227,13 +372,16 @@ class BooruTagger(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output("tags", is_output_list=True),
+                io.String.Output("general_tags", is_output_list=True),
+                io.String.Output("rating", is_output_list=True),
+                io.String.Output("character_tags", is_output_list=True),
             ]
         )
 
     @classmethod
     def execute(cls, tagger_model, tagger_info, image, threshold, character_threshold, trailing_comma=False, sort_tags=False, exclude_tags="") -> io.NodeOutput:
         pbar = utils.ProgressBar(image.shape[0])
-        tags = []
+        tags, ratings, chara_tags, general_tags = [], [], [], []
         for i in range(image.shape[0]):
             img = Image.fromarray(np.array(image[i] * 255, dtype=np.uint8))
 
@@ -244,13 +392,21 @@ class BooruTagger(io.ComfyNode):
                 probs = pixai_tag(tagger_model, img)
             elif model_name.startswith("camie-tagger-v2"):
                 probs = camie_tag(tagger_model, img)
+            elif model_name.startswith("cl-tagger-v1"):
+                probs = cl_tagger_v1_tag(tagger_model, img)
+            elif model_name.startswith("cl-tagger-v2"):
+                probs = cl_tagger_v2_tag(tagger_model, img)
             else:  # WD tagger
                 probs = wd_tag(tagger_model, img)
 
-            tags.append(get_tag(probs, tags_df, threshold,
-                        character_threshold, trailing_comma, sort_tags, exclude_tags))
+            result = get_tag(probs, tags_df, threshold,
+                             character_threshold, trailing_comma, sort_tags, exclude_tags)
+            tags.append(result["combined"])
+            ratings.append(result["rating"])
+            chara_tags.append(result["character"])
+            general_tags.append(result["general"])
             pbar.update(1)
-        return io.NodeOutput(tags)
+        return io.NodeOutput(tags, general_tags, ratings, chara_tags)
 
 
 class LoadBooruTaggerModel(io.ComfyNode):
@@ -286,7 +442,9 @@ class LoadBooruTaggerModel(io.ComfyNode):
             await download_model(model_name, client_id, node)
 
         name = os.path.join(models_dir, model_name + ".onnx")
-        model = InferenceSession(name, providers=defaults["ortProviders"])
+        sess_options = onnxruntime.SessionOptions()
+        sess_options.log_severity_level = 3  # Suppress provider init warnings
+        model = InferenceSession(name, sess_options=sess_options, providers=defaults["ortProviders"])
 
         threshold = config["threshold"].get(model_name, defaults["threshold"])
         character_threshold = config["character_threshold"].get(model_name, defaults["character_threshold"])
@@ -295,6 +453,8 @@ class LoadBooruTaggerModel(io.ComfyNode):
         json_path = os.path.join(models_dir, model_name + ".json")
         if (model_name.startswith("wd") or model_name.startswith("pixai")) and os.path.exists(csv_path):
             df = pd.read_csv(csv_path)
+            # Remap WD rating tags from category 9 → 1 (rating)
+            df.loc[df['category'] == 9, 'category'] = 1
             if replace_underscore:
                 df["name"] = df["name"].str.replace("_", " ")
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
@@ -306,9 +466,90 @@ class LoadBooruTaggerModel(io.ComfyNode):
                 df["name"] = list(tag_mapping["idx_to_tag"].values())
                 df["category_name"] = list(
                     tag_mapping["tag_to_category"].values())
-                category_to_idx = {value: index for index, value in enumerate(
-                    js["dataset_info"]["categories"])}
-                df["category"] = df["category_name"].replace(category_to_idx)
+                # Remap categories to convention:
+                #   0=general, 1=rating, 3=meta/year, 4=character/artist/copyright
+                _cat_map_camie = {
+                    "general": 0, "rating": 1,
+                    "meta": 3, "year": 3,
+                    "character": 4, "artist": 4, "copyright": 4,
+                }
+                df["category"] = df["category_name"].map(
+                    lambda c: _cat_map_camie.get(c, 0))
+            if replace_underscore:
+                df["name"] = df["name"].str.replace("_", " ")
+            return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
+        elif model_name.startswith("cl-tagger-v1") and os.path.exists(json_path):
+            df = pd.DataFrame()
+            with open(json_path, encoding="utf-8") as f:
+                js = json.load(f)
+
+                # Handle both tag_mapping.json formats:
+                # Format A: dict-of-dicts {0: {"tag": "...", "category": "General"}, ...}
+                # Format B: {"idx_to_tag": {...}, "tag_to_category": {...}, "categories": [...]}
+                if "idx_to_tag" in js:
+                    # Format B (same structure as cl_tagger_v2)
+                    idx_to_tag = js["idx_to_tag"]
+                    tag_to_category = js["tag_to_category"]
+                else:
+                    # Format A: dict with int keys, each having "tag" and "category"
+                    idx_to_tag = {}
+                    tag_to_category = {}
+                    for k, v in js.items():
+                        idx = int(k)
+                        tag_name = v["tag"]
+                        idx_to_tag[str(idx)] = tag_name
+                        tag_to_category[tag_name] = v["category"]
+
+                # Category mapping (see convention at top of get_tag):
+                #   rating → 1   quality → 2   meta/model → 3
+                #   character/copyright/artist → 4   general → 0
+                _cat_map_v1 = {
+                    "general": 0, "rating": 1, "quality": 2,
+                    "meta": 3, "model": 3,
+                    "character": 4, "copyright": 4, "artist": 4,
+                }
+
+                tag_names = []
+                tag_cats = []
+                for idx_str in sorted(idx_to_tag.keys(), key=int):
+                    tag_name = idx_to_tag[idx_str]
+                    category = tag_to_category.get(tag_name, "").lower()
+                    tag_names.append(tag_name)
+                    tag_cats.append(_cat_map_v1.get(category, 0))
+
+                df["name"] = tag_names
+                df["category"] = tag_cats
+            if replace_underscore:
+                df["name"] = df["name"].str.replace("_", " ")
+            return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
+        elif model_name.startswith("cl-tagger-v2") and os.path.exists(json_path):
+            df = pd.DataFrame()
+            with open(json_path, encoding="utf-8") as f:
+                js = json.load(f)
+                idx_to_tag = js["idx_to_tag"]
+                tag_to_category = js["tag_to_category"]
+                categories = js["categories"]
+
+                # Category mapping (see convention at top of get_tag):
+                #   rating → 1   quality → 2   meta → 3
+                #   character/copyright → 4   general → 0
+                _cat_map_v2 = {
+                    "general": 0, "rating": 1, "quality": 2,
+                    "meta": 3,
+                    "character": 4, "copyright": 4,
+                }
+
+                tag_names = []
+                tag_cats = []
+                # idx_to_tag keys are strings, iterate in sorted order for consistency
+                for idx_str in sorted(idx_to_tag.keys(), key=int):
+                    tag_name = idx_to_tag[idx_str]
+                    category = tag_to_category.get(tag_name, "").lower()
+                    tag_names.append(tag_name)
+                    tag_cats.append(_cat_map_v2.get(category, 0))
+
+                df["name"] = tag_names
+                df["category"] = tag_cats
             if replace_underscore:
                 df["name"] = df["name"].str.replace("_", " ")
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)

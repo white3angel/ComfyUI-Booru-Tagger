@@ -22,20 +22,49 @@
 		"wd-v1-4-convnext-tagger": "{HF_ENDPOINT}/SmilingWolf/wd-v1-4-convnext-tagger",
 		"wd-v1-4-vit-tagger-v2": "{HF_ENDPOINT}/SmilingWolf/wd-v1-4-vit-tagger-v2",
 		"wd-v1-4-swinv2-tagger-v2": "{HF_ENDPOINT}/SmilingWolf/wd-v1-4-swinv2-tagger-v2",
-		"wd-v1-4-vit-tagger": "{HF_ENDPOINT}/SmilingWolf/wd-v1-4-vit-tagger"
+		"wd-v1-4-vit-tagger": "{HF_ENDPOINT}/SmilingWolf/wd-v1-4-vit-tagger",
+		"cl-tagger-v1-v1_00": "{HF_ENDPOINT}/cella110n/cl_tagger",
+		"cl-tagger-v1-v1_01": "{HF_ENDPOINT}/cella110n/cl_tagger",
+		"cl-tagger-v1-v1_02": "{HF_ENDPOINT}/cella110n/cl_tagger",
+		"cl-tagger-v2-v2_00": "{HF_ENDPOINT}/cella110n/cl_tagger_v2",
+		"cl-tagger-v2-v2_01a": "{HF_ENDPOINT}/cella110n/cl_tagger_v2"
 	},
 	"model_path": {
-		"camie-tagger-v2": "camie-tagger-v2.onnx"
+		"camie-tagger-v2": "camie-tagger-v2.onnx",
+		"cl-tagger-v1-v1_00": "cl_tagger_1_00/model.onnx",
+		"cl-tagger-v1-v1_01": "cl_tagger_1_01/model.onnx",
+		"cl-tagger-v1-v1_02": "cl_tagger_1_02/model.onnx",
+		"cl-tagger-v2-v2_00": "v2_00/model.onnx",
+		"cl-tagger-v2-v2_01a": "v2_01a/model.onnx"
 	},
 	"metadata_path": {
-		"camie-tagger-v2": "camie-tagger-v2-metadata.json"
+		"camie-tagger-v2": "camie-tagger-v2-metadata.json",
+		"cl-tagger-v1-v1_00": "cl_tagger_1_00/tag_mapping.json",
+		"cl-tagger-v1-v1_01": "cl_tagger_1_01/tag_mapping.json",
+		"cl-tagger-v1-v1_02": "cl_tagger_1_02/tag_mapping.json",
+		"cl-tagger-v2-v2_00": "v2_00/model_vocabulary.json",
+		"cl-tagger-v2-v2_01a": "v2_01a/model_vocabulary.json"
+	},
+	"external_data_path": {
+		"cl-tagger-v2-v2_00": "v2_00/model.onnx.data",
+		"cl-tagger-v2-v2_01a": "v2_01a/model.onnx.data"
 	},
 	"threshold":{
 		"pixai-tagger-v0.9": 0.3,
-		"camie-tagger-v2": 0.492
+		"camie-tagger-v2": 0.492,
+		"cl-tagger-v1-v1_00": 0.55,
+		"cl-tagger-v1-v1_01": 0.55,
+		"cl-tagger-v1-v1_02": 0.55,
+		"cl-tagger-v2-v2_00": 0.55,
+		"cl-tagger-v2-v2_01a": 0.55
 	},
 	"character_threshold":{
 		"pixai-tagger-v0.9": 0.85,
-		"camie-tagger-v2": 0.492
+		"camie-tagger-v2": 0.492,
+		"cl-tagger-v1-v1_00": 0.6,
+		"cl-tagger-v1-v1_01": 0.6,
+		"cl-tagger-v1-v1_02": 0.6,
+		"cl-tagger-v2-v2_00": 0.55,
+		"cl-tagger-v2-v2_01a": 0.55
 	}
 }
