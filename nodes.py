@@ -70,6 +70,22 @@ def get_installed_models():
     return models
 
 
+def prepare_external_data_file(model):
+    """Alias the versioned download to the filename embedded in the ONNX file."""
+    if model not in config.get("external_data_path", {}):
+        return
+
+    source = os.path.join(models_dir, model + ".onnx.data")
+    alias = os.path.join(models_dir, "model.onnx.data")
+    if os.path.exists(alias):
+        if os.path.samefile(source, alias):
+            return
+        os.unlink(alias)
+    # A hard link gives ONNX Runtime the embedded filename without duplicating
+    # the multi-gigabyte external data file.
+    os.link(source, alias)
+
+
 def wd_tag(wd_model: InferenceSession, img: Image.Image):
     img_input = wd_model.get_inputs()[0]
     (batch_size, height, width, channel) = img_input.shape
@@ -441,6 +457,7 @@ class LoadBooruTaggerModel(io.ComfyNode):
         if not any(model_name + ".onnx" in s for s in installed):
             await download_model(model_name, client_id, node)
 
+        prepare_external_data_file(model_name)
         name = os.path.join(models_dir, model_name + ".onnx")
         sess_options = onnxruntime.SessionOptions()
         sess_options.log_severity_level = 3  # Suppress provider init warnings
