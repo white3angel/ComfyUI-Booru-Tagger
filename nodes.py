@@ -51,12 +51,12 @@ defaults["ortProviders"] = [p for p in _ORT_PRIORITY if p in available_providers
 if not defaults["ortProviders"]:
     defaults["ortProviders"] = ["CPUExecutionProvider"]
 
-if "wd14_tagger" in folder_paths.folder_names_and_paths:
-    models_dir = folder_paths.get_folder_paths("wd14_tagger")[0]
-    if not os.path.exists(models_dir):
-        os.makedirs(models_dir)
-else:
-    models_dir = get_ext_dir("models", mkdir=True)
+folder_name = "wd14_tagger"
+target_folder_path = os.path.join(folder_paths.models_dir, folder_name)
+if not os.path.exists(target_folder_path):
+    os.makedirs(target_folder_path, exist_ok=True)
+folder_paths.add_model_folder_path(folder_name, target_folder_path)
+models_dir = folder_paths.get_folder_paths(folder_name)[0]
 known_models = list(config["model_url"].keys())
 
 log("Available ORT providers: " +
@@ -72,18 +72,25 @@ def get_installed_models():
 
 def prepare_external_data_file(model):
     """Alias the versioned download to the filename embedded in the ONNX file."""
-    if model not in config.get("external_data_path", {}):
+    external_data_path = config.get("external_data_path", {}).get(model, None)
+    if not external_data_path:
         return
 
-    source = os.path.join(models_dir, model + ".onnx.data")
-    alias = os.path.join(models_dir, "model.onnx.data")
-    if os.path.exists(alias):
-        if os.path.samefile(source, alias):
-            return
-        os.unlink(alias)
-    # A hard link gives ONNX Runtime the embedded filename without duplicating
-    # the multi-gigabyte external data file.
-    os.link(source, alias)
+    rel_model_path = config["model_path"].get(model, model + ".onnx")
+    model_dir_path = os.path.dirname(os.path.join(models_dir, rel_model_path))
+
+    source = os.path.join(models_dir, external_data_path)
+    alias = os.path.join(model_dir_path, "model.onnx.data")
+    
+    if os.path.exists(source):
+        if os.path.exists(alias):
+            if os.path.samefile(source, alias):
+                return
+            os.unlink(alias)
+        os.makedirs(os.path.dirname(alias), exist_ok=True)
+        # A hard link gives ONNX Runtime the embedded filename without duplicating
+        # the multi-gigabyte external data file.
+        os.link(source, alias)
 
 
 def wd_tag(wd_model: InferenceSession, img: Image.Image):
@@ -323,6 +330,8 @@ async def download_model(model, client_id, node):
     model_path = config["model_path"].get(model, "model.onnx")
     metadata_path = config["metadata_path"].get(model, "selected_tags.csv")
     external_data_path = config.get("external_data_path", {}).get(model, None)
+    dest_model_path = os.path.join(models_dir, model_path)
+    dest_metadata_path = os.path.join(models_dir, metadata_path)
 
     # Support HF token for gated models (set HF_TOKEN environment variable)
     hf_token = os.getenv("HF_TOKEN", os.getenv("HUGGINGFACE_TOKEN"))
@@ -335,15 +344,22 @@ async def download_model(model, client_id, node):
             nonlocal client_id
 
         try:
+            os.makedirs(os.path.dirname(dest_model_path), exist_ok=True)
+            log(f"Downloading model {model} to {dest_model_path}...", "INFO", True)
             await download_to_file(
-                f"{url}/{model_path}", os.path.join(models_dir, f"{model}.onnx"), update_callback, session=session)
+                f"{url}/{model_path}", dest_model_path, update_callback, session=session)
 
-            # Download external data file if the model uses it (e.g. cl_tagger_v2 with model.onnx.data)
             if external_data_path:
-                ext_data_dest = os.path.join(models_dir, f"{model}.onnx.data")
-                log(f"Downloading external data file for {model}...", "INFO", True)
+                dest_ext_path = os.path.join(models_dir, external_data_path)
+                os.makedirs(os.path.dirname(dest_ext_path), exist_ok=True)
+                log(f"Downloading external data file for {model} to {dest_ext_path}...", "INFO", True)
                 await download_to_file(
-                    f"{url}/{external_data_path}", ext_data_dest, update_callback, session=session)
+                    f"{url}/{external_data_path}", dest_ext_path, update_callback, session=session)
+
+            os.makedirs(os.path.dirname(dest_metadata_path), exist_ok=True)
+            log(f"Downloading metadata to {dest_metadata_path}...", "INFO", True)
+            await download_to_file(
+                f"{url}/{metadata_path}", dest_metadata_path, update_callback, session=session)
 
             ext = metadata_path.split('.')[-1]
             await download_to_file(
@@ -450,15 +466,17 @@ class LoadBooruTaggerModel(io.ComfyNode):
 
     @classmethod
     async def execute(cls, model_name, replace_underscore, client_id=None, node=None) -> io.NodeOutput:
-        # Load model
         if model_name.endswith(".onnx"):
             model_name = model_name[0:-5]
-        installed = list(get_installed_models())
-        if not any(model_name + ".onnx" in s for s in installed):
+
+        rel_model_path = config["model_path"].get(model_name, model_name + ".onnx")
+        name = os.path.join(models_dir, rel_model_path)
+
+        if not os.path.exists(name):
             await download_model(model_name, client_id, node)
 
         prepare_external_data_file(model_name)
-        name = os.path.join(models_dir, model_name + ".onnx")
+
         sess_options = onnxruntime.SessionOptions()
         sess_options.log_severity_level = 3  # Suppress provider init warnings
         model = InferenceSession(name, sess_options=sess_options, providers=defaults["ortProviders"])
@@ -466,25 +484,41 @@ class LoadBooruTaggerModel(io.ComfyNode):
         threshold = config["threshold"].get(model_name, defaults["threshold"])
         character_threshold = config["character_threshold"].get(model_name, defaults["character_threshold"])
 
-        csv_path = os.path.join(models_dir, model_name + ".csv")
-        json_path = os.path.join(models_dir, model_name + ".json")
-        if (model_name.startswith("wd") or model_name.startswith("pixai")) and os.path.exists(csv_path):
-            df = pd.read_csv(csv_path)
+        rel_metadata_path = config["metadata_path"].get(model_name)
+        if rel_metadata_path:
+            meta_path = os.path.join(models_dir, rel_metadata_path)
+        else:
+            meta_dir = os.path.dirname(name)
+            base_name = os.path.splitext(os.path.basename(name))[0]
+            csv_path_opt = os.path.join(meta_dir, base_name + ".csv")
+            json_path_opt = os.path.join(meta_dir, base_name + ".json")
+            if os.path.exists(csv_path_opt):
+                meta_path = csv_path_opt
+            elif os.path.exists(json_path_opt):
+                meta_path = json_path_opt
+            else:
+                meta_path = None
+
+        if not meta_path or not os.path.exists(meta_path):
+            log(f"No tag data is found for {model_name} at: {meta_path}")
+            exit(1)
+
+        if (model_name.startswith("wd") or model_name.startswith("pixai")) and meta_path.endswith(".csv"):
+            df = pd.read_csv(meta_path)
             # Remap WD rating tags from category 9 → 1 (rating)
             df.loc[df['category'] == 9, 'category'] = 1
             if replace_underscore:
                 df["name"] = df["name"].str.replace("_", " ")
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
-        elif model_name.startswith("camie") and os.path.exists(json_path):
+            
+        elif model_name.startswith("camie") and meta_path.endswith(".json"):
             df = pd.DataFrame()
-            with open(json_path) as f:
+            with open(meta_path, encoding="utf-8") as f:
                 js = json.load(f)
                 tag_mapping = js["dataset_info"]["tag_mapping"]
                 df["name"] = list(tag_mapping["idx_to_tag"].values())
                 df["category_name"] = list(
                     tag_mapping["tag_to_category"].values())
-                # Remap categories to convention:
-                #   0=general, 1=rating, 3=meta/year, 4=character/artist/copyright
                 _cat_map_camie = {
                     "general": 0, "rating": 1,
                     "meta": 3, "year": 3,
@@ -495,20 +529,16 @@ class LoadBooruTaggerModel(io.ComfyNode):
             if replace_underscore:
                 df["name"] = df["name"].str.replace("_", " ")
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
-        elif model_name.startswith("cl-tagger-v1") and os.path.exists(json_path):
+            
+        elif model_name.startswith("cl-tagger-v1") and meta_path.endswith(".json"):
             df = pd.DataFrame()
-            with open(json_path, encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 js = json.load(f)
 
-                # Handle both tag_mapping.json formats:
-                # Format A: dict-of-dicts {0: {"tag": "...", "category": "General"}, ...}
-                # Format B: {"idx_to_tag": {...}, "tag_to_category": {...}, "categories": [...]}
                 if "idx_to_tag" in js:
-                    # Format B (same structure as cl_tagger_v2)
                     idx_to_tag = js["idx_to_tag"]
                     tag_to_category = js["tag_to_category"]
                 else:
-                    # Format A: dict with int keys, each having "tag" and "category"
                     idx_to_tag = {}
                     tag_to_category = {}
                     for k, v in js.items():
@@ -517,9 +547,6 @@ class LoadBooruTaggerModel(io.ComfyNode):
                         idx_to_tag[str(idx)] = tag_name
                         tag_to_category[tag_name] = v["category"]
 
-                # Category mapping (see convention at top of get_tag):
-                #   rating → 1   quality → 2   meta/model → 3
-                #   character/copyright/artist → 4   general → 0
                 _cat_map_v1 = {
                     "general": 0, "rating": 1, "quality": 2,
                     "meta": 3, "model": 3,
@@ -539,17 +566,15 @@ class LoadBooruTaggerModel(io.ComfyNode):
             if replace_underscore:
                 df["name"] = df["name"].str.replace("_", " ")
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
-        elif model_name.startswith("cl-tagger-v2") and os.path.exists(json_path):
+            
+        elif model_name.startswith("cl-tagger-v2") and meta_path.endswith(".json"):
             df = pd.DataFrame()
-            with open(json_path, encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 js = json.load(f)
                 idx_to_tag = js["idx_to_tag"]
                 tag_to_category = js["tag_to_category"]
                 categories = js["categories"]
 
-                # Category mapping (see convention at top of get_tag):
-                #   rating → 1   quality → 2   meta → 3
-                #   character/copyright → 4   general → 0
                 _cat_map_v2 = {
                     "general": 0, "rating": 1, "quality": 2,
                     "meta": 3,
@@ -558,7 +583,6 @@ class LoadBooruTaggerModel(io.ComfyNode):
 
                 tag_names = []
                 tag_cats = []
-                # idx_to_tag keys are strings, iterate in sorted order for consistency
                 for idx_str in sorted(idx_to_tag.keys(), key=int):
                     tag_name = idx_to_tag[idx_str]
                     category = tag_to_category.get(tag_name, "").lower()
@@ -571,9 +595,8 @@ class LoadBooruTaggerModel(io.ComfyNode):
                 df["name"] = df["name"].str.replace("_", " ")
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
         else:
-            log("No tag data is found.")
+            log("No compatible tag data parser found for this model.")
             exit(1)
-
 
 class UniqueTags(io.ComfyNode):
     @classmethod
