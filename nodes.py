@@ -397,7 +397,7 @@ class BooruTagger(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="Booru Tagger",
-            category="image",
+            category="BooruTagger",
             inputs=[
                 io.Custom("TAGGER_MODEL").Input("tagger_model"),
                 io.Custom("TAGGER_INFO").Input("tagger_info"),
@@ -459,7 +459,7 @@ class LoadBooruTaggerModel(io.ComfyNode):
         models = known_models + extra
         return io.Schema(
             node_id="Load Booru Tagger",
-            category="model",
+            category="BooruTagger",
             inputs=[
                 io.Combo.Input("model_name", options=models,
                                default=defaults["model"]),
@@ -613,7 +613,7 @@ class UniqueTags(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="Unique Tags",
-            category="text",
+            category="BooruTagger",
             inputs=[
                 io.String.Input("input_tags")
             ],
