@@ -66,8 +66,18 @@ log("Using ORT providers: " +
 
 
 def get_installed_models():
-    models = filter(lambda x: x.endswith(".onnx"), os.listdir(models_dir))
-    return models
+    installed = []
+    known_paths = {os.path.normpath(path).replace("\\", "/") for path in config.get("model_path", {}).values()}
+    
+    for root, dirs, files in os.walk(models_dir):
+        for file in files:
+            if file.endswith(".onnx"):
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, models_dir).replace("\\", "/")
+                if rel_path in known_paths:
+                    continue
+                installed.append(rel_path)
+    return installed
 
 
 def prepare_external_data_file(model):
@@ -327,11 +337,15 @@ async def download_model(model, client_id, node):
     url = url.replace("{HF_ENDPOINT}", hf_endpoint)
     url = f"{url}/resolve/main"
 
-    model_path = config["model_path"].get(model, "model.onnx")
+    model_path = config["model_path"].get(model, model + ".onnx")
     metadata_path = config["metadata_path"].get(model, "selected_tags.csv")
     external_data_path = config.get("external_data_path", {}).get(model, None)
     dest_model_path = os.path.join(models_dir, model_path)
     dest_metadata_path = os.path.join(models_dir, metadata_path)
+
+    # 优先读取 models.json 中的 remote 映射关系，缺省则取本地路径的 basename
+    remote_model_path = config.get("remote_model_path", {}).get(model, os.path.basename(model_path))
+    remote_metadata_path = config.get("remote_metadata_path", {}).get(model, os.path.basename(metadata_path))
 
     # Support HF token for gated models (set HF_TOKEN environment variable)
     hf_token = os.getenv("HF_TOKEN", os.getenv("HUGGINGFACE_TOKEN"))
@@ -347,7 +361,7 @@ async def download_model(model, client_id, node):
             os.makedirs(os.path.dirname(dest_model_path), exist_ok=True)
             log(f"Downloading model {model} to {dest_model_path}...", "INFO", True)
             await download_to_file(
-                f"{url}/{model_path}", dest_model_path, update_callback, session=session)
+                f"{url}/{remote_model_path}", dest_model_path, update_callback, session=session)
 
             if external_data_path:
                 dest_ext_path = os.path.join(models_dir, external_data_path)
@@ -359,11 +373,7 @@ async def download_model(model, client_id, node):
             os.makedirs(os.path.dirname(dest_metadata_path), exist_ok=True)
             log(f"Downloading metadata to {dest_metadata_path}...", "INFO", True)
             await download_to_file(
-                f"{url}/{metadata_path}", dest_metadata_path, update_callback, session=session)
-
-            ext = metadata_path.split('.')[-1]
-            await download_to_file(
-                f"{url}/{metadata_path}", os.path.join(models_dir, f"{model}.{ext}"), update_callback, session=session)
+                f"{url}/{remote_metadata_path}", dest_metadata_path, update_callback, session=session)
 
         except aiohttp.ClientConnectorError as err:
             log("Unable to download model. Download files manually or try using a HF mirror/proxy website by setting the environment variable HF_ENDPOINT=https://.....", "ERROR", True)
