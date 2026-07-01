@@ -358,22 +358,28 @@ async def download_model(model, client_id, node):
             nonlocal client_id
 
         try:
-            os.makedirs(os.path.dirname(dest_model_path), exist_ok=True)
-            log(f"Downloading model {model} to {dest_model_path}...", "INFO", True)
-            await download_to_file(
-                f"{url}/{remote_model_path}", dest_model_path, update_callback, session=session)
+            # Only download the ONNX model file if it does not exist locally
+            if not os.path.exists(dest_model_path):
+                os.makedirs(os.path.dirname(dest_model_path), exist_ok=True)
+                log(f"Downloading model {model} to {dest_model_path}...", "INFO", True)
+                await download_to_file(
+                    f"{url}/{remote_model_path}", dest_model_path, update_callback, session=session)
 
+            # Only download external data file if required and missing
             if external_data_path:
                 dest_ext_path = os.path.join(models_dir, external_data_path)
-                os.makedirs(os.path.dirname(dest_ext_path), exist_ok=True)
-                log(f"Downloading external data file for {model} to {dest_ext_path}...", "INFO", True)
-                await download_to_file(
-                    f"{url}/{external_data_path}", dest_ext_path, update_callback, session=session)
+                if not os.path.exists(dest_ext_path):
+                    os.makedirs(os.path.dirname(dest_ext_path), exist_ok=True)
+                    log(f"Downloading external data file for {model} to {dest_ext_path}...", "INFO", True)
+                    await download_to_file(
+                        f"{url}/{external_data_path}", dest_ext_path, update_callback, session=session)
 
-            os.makedirs(os.path.dirname(dest_metadata_path), exist_ok=True)
-            log(f"Downloading metadata to {dest_metadata_path}...", "INFO", True)
-            await download_to_file(
-                f"{url}/{remote_metadata_path}", dest_metadata_path, update_callback, session=session)
+            # Only download the metadata file if it does not exist locally
+            if not os.path.exists(dest_metadata_path):
+                os.makedirs(os.path.dirname(dest_metadata_path), exist_ok=True)
+                log(f"Downloading metadata to {dest_metadata_path}...", "INFO", True)
+                await download_to_file(
+                    f"{url}/{remote_metadata_path}", dest_metadata_path, update_callback, session=session)
 
         except aiohttp.ClientConnectorError as err:
             log("Unable to download model. Download files manually or try using a HF mirror/proxy website by setting the environment variable HF_ENDPOINT=https://.....", "ERROR", True)
@@ -482,7 +488,12 @@ class LoadBooruTaggerModel(io.ComfyNode):
         rel_model_path = config["model_path"].get(model_name, model_name + ".onnx")
         name = os.path.join(models_dir, rel_model_path)
 
-        if not os.path.exists(name):
+        # Get the expected metadata path to verify its presence
+        rel_metadata_path = config["metadata_path"].get(model_name)
+        meta_path = os.path.join(models_dir, rel_metadata_path) if rel_metadata_path else None
+
+        # Download if either the ONNX model or the metadata file is missing
+        if not os.path.exists(name) or (meta_path and not os.path.exists(meta_path)):
             await download_model(model_name, client_id, node)
 
         prepare_external_data_file(model_name)
@@ -511,7 +522,8 @@ class LoadBooruTaggerModel(io.ComfyNode):
 
         if not meta_path or not os.path.exists(meta_path):
             log(f"No tag data is found for {model_name} at: {meta_path}")
-            exit(1)
+            # Raise an exception instead of calling exit(1) to prevent ComfyUI from freezing
+            raise FileNotFoundError(f"Required tag metadata file is missing: {meta_path}")
 
         if (model_name.startswith("wd") or model_name.startswith("pixai")) and meta_path.endswith(".csv"):
             df = pd.read_csv(meta_path)
@@ -606,7 +618,8 @@ class LoadBooruTaggerModel(io.ComfyNode):
             return io.NodeOutput(model, (df, model_name), threshold, character_threshold)
         else:
             log("No compatible tag data parser found for this model.")
-            exit(1)
+            # Raise an exception instead of calling exit(1) to prevent ComfyUI from freezing
+            raise ValueError(f"No compatible tag data parser found for model: {model_name}")
 
 class UniqueTags(io.ComfyNode):
     @classmethod
