@@ -64,22 +64,6 @@ log("Available ORT providers: " +
 log("Using ORT providers: " +
     ", ".join(defaults["ortProviders"]), "DEBUG", True)
 
-
-def get_installed_models():
-    installed = []
-    known_paths = {os.path.normpath(path).replace("\\", "/") for path in config.get("model_path", {}).values()}
-    
-    for root, dirs, files in os.walk(models_dir):
-        for file in files:
-            if file.endswith(".onnx"):
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, models_dir).replace("\\", "/")
-                if rel_path in known_paths:
-                    continue
-                installed.append(rel_path)
-    return installed
-
-
 def prepare_external_data_file(model):
     """Alias the versioned download to the filename embedded in the ONNX file."""
     external_data_path = config.get("external_data_path", {}).get(model, None)
@@ -460,9 +444,7 @@ class BooruTagger(io.ComfyNode):
 class LoadBooruTaggerModel(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
-        extra = [name for name, _ in (os.path.splitext(
-            m) for m in get_installed_models()) if name not in known_models]
-        models = known_models + extra
+        models = known_models
         return io.Schema(
             node_id="Load Booru Tagger",
             category="BooruTagger",
@@ -482,18 +464,19 @@ class LoadBooruTaggerModel(io.ComfyNode):
 
     @classmethod
     async def execute(cls, model_name, replace_underscore, client_id=None, node=None) -> io.NodeOutput:
-        if model_name.endswith(".onnx"):
-            model_name = model_name[0:-5]
-
-        rel_model_path = config["model_path"].get(model_name, model_name + ".onnx")
+        # Get paths directly from models.json config to avoid scanning guessworks
+        rel_model_path = config["model_path"].get(model_name)
+        if not rel_model_path:
+            raise ValueError(f"Model path for {model_name} is not defined in models.json")
         name = os.path.join(models_dir, rel_model_path)
 
-        # Get the expected metadata path to verify its presence
         rel_metadata_path = config["metadata_path"].get(model_name)
-        meta_path = os.path.join(models_dir, rel_metadata_path) if rel_metadata_path else None
+        if not rel_metadata_path:
+            raise ValueError(f"Metadata path for {model_name} is not defined in models.json")
+        meta_path = os.path.join(models_dir, rel_metadata_path)
 
         # Download if either the ONNX model or the metadata file is missing
-        if not os.path.exists(name) or (meta_path and not os.path.exists(meta_path)):
+        if not os.path.exists(name) or not os.path.exists(meta_path):
             await download_model(model_name, client_id, node)
 
         prepare_external_data_file(model_name)
@@ -505,24 +488,9 @@ class LoadBooruTaggerModel(io.ComfyNode):
         threshold = config["threshold"].get(model_name, defaults["threshold"])
         character_threshold = config["character_threshold"].get(model_name, defaults["character_threshold"])
 
-        rel_metadata_path = config["metadata_path"].get(model_name)
-        if rel_metadata_path:
-            meta_path = os.path.join(models_dir, rel_metadata_path)
-        else:
-            meta_dir = os.path.dirname(name)
-            base_name = os.path.splitext(os.path.basename(name))[0]
-            csv_path_opt = os.path.join(meta_dir, base_name + ".csv")
-            json_path_opt = os.path.join(meta_dir, base_name + ".json")
-            if os.path.exists(csv_path_opt):
-                meta_path = csv_path_opt
-            elif os.path.exists(json_path_opt):
-                meta_path = json_path_opt
-            else:
-                meta_path = None
-
-        if not meta_path or not os.path.exists(meta_path):
+        # Validate that metadata actually exists after the download step
+        if not os.path.exists(meta_path):
             log(f"No tag data is found for {model_name} at: {meta_path}")
-            # Raise an exception instead of calling exit(1) to prevent ComfyUI from freezing
             raise FileNotFoundError(f"Required tag metadata file is missing: {meta_path}")
 
         if (model_name.startswith("wd") or model_name.startswith("pixai")) and meta_path.endswith(".csv"):
