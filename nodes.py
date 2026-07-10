@@ -70,29 +70,6 @@ log("Available ORT providers: " +
 log("Using ORT providers: " +
     ", ".join(defaults["ortProviders"]), "DEBUG", True)
 
-def prepare_external_data_file(model):
-    """Alias the versioned download to the filename embedded in the ONNX file."""
-    external_data_path = config.get("external_data_path", {}).get(model, None)
-    if not external_data_path:
-        return
-
-    rel_model_path = config["model_path"].get(model, model + ".onnx")
-    model_dir_path = os.path.dirname(os.path.join(models_dir, rel_model_path))
-
-    source = os.path.join(models_dir, external_data_path)
-    alias = os.path.join(model_dir_path, "model.onnx.data")
-    
-    if os.path.exists(source):
-        if os.path.exists(alias):
-            if os.path.samefile(source, alias):
-                return
-            os.unlink(alias)
-        os.makedirs(os.path.dirname(alias), exist_ok=True)
-        # A hard link gives ONNX Runtime the embedded filename without duplicating
-        # the multi-gigabyte external data file.
-        os.link(source, alias)
-
-
 def _migrate_legacy_model(model_name, dest_model, dest_meta):
     """Move legacy flat files into the nested directory structure (v1.x → v2.x).
 
@@ -526,8 +503,6 @@ class LoadBooruTaggerModel(io.ComfyNode):
         # Download if either the ONNX model or the metadata file is missing
         if not os.path.exists(name) or not os.path.exists(meta_path):
             await download_model(model_name, client_id, node)
-
-        prepare_external_data_file(model_name)
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.log_severity_level = 3  # Suppress provider init warnings
