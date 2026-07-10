@@ -73,18 +73,46 @@
 		"wd-v1-4-vit-tagger": "wd-v1-4-vit-tagger/selected_tags.csv"
 	},
 	"remote_model_path": {
+		"wd-eva02-large-tagger-v3": "model.onnx",
+		"wd-vit-large-tagger-v3": "model.onnx",
+		"wd-vit-tagger-v3": "model.onnx",
+		"wd-swinv2-tagger-v3": "model.onnx",
+		"wd-convnext-tagger-v3": "model.onnx",
+		"camie-tagger-v2": "camie-tagger-v2.onnx",
+		"pixai-tagger-v0.9": "model.onnx",
 		"cl-tagger-v2-v2_00": "v2_00/model.onnx",
 		"cl-tagger-v2-v2_01a": "v2_01a/model.onnx",
 		"cl-tagger-v1-v1_00": "cl_tagger_1_00/model.onnx",
 		"cl-tagger-v1-v1_01": "cl_tagger_1_01/model.onnx",
-		"cl-tagger-v1-v1_02": "cl_tagger_1_02/model.onnx"
+		"cl-tagger-v1-v1_02": "cl_tagger_1_02/model.onnx",
+		"wd-v1-4-moat-tagger-v2": "model.onnx",
+		"wd-v1-4-convnextv2-tagger-v2": "model.onnx",
+		"wd-v1-4-convnext-tagger-v2": "model.onnx",
+		"wd-v1-4-vit-tagger-v2": "model.onnx",
+		"wd-v1-4-swinv2-tagger-v2": "model.onnx",
+		"wd-v1-4-convnext-tagger": "model.onnx",
+		"wd-v1-4-vit-tagger": "model.onnx"
 	},
 	"remote_metadata_path": {
+		"wd-eva02-large-tagger-v3": "selected_tags.csv",
+		"wd-vit-large-tagger-v3": "selected_tags.csv",
+		"wd-vit-tagger-v3": "selected_tags.csv",
+		"wd-swinv2-tagger-v3": "selected_tags.csv",
+		"wd-convnext-tagger-v3": "selected_tags.csv",
+		"camie-tagger-v2": "camie-tagger-v2-metadata.json",
+		"pixai-tagger-v0.9": "selected_tags.csv",
 		"cl-tagger-v2-v2_00": "v2_00/model_vocabulary.json",
 		"cl-tagger-v2-v2_01a": "v2_01a/model_vocabulary.json",
 		"cl-tagger-v1-v1_00": "cl_tagger_1_00/tag_mapping.json",
 		"cl-tagger-v1-v1_01": "cl_tagger_1_01/tag_mapping.json",
-		"cl-tagger-v1-v1_02": "cl_tagger_1_02/tag_mapping.json"
+		"cl-tagger-v1-v1_02": "cl_tagger_1_02/tag_mapping.json",
+		"wd-v1-4-moat-tagger-v2": "selected_tags.csv",
+		"wd-v1-4-convnextv2-tagger-v2": "selected_tags.csv",
+		"wd-v1-4-convnext-tagger-v2": "selected_tags.csv",
+		"wd-v1-4-vit-tagger-v2": "selected_tags.csv",
+		"wd-v1-4-swinv2-tagger-v2": "selected_tags.csv",
+		"wd-v1-4-convnext-tagger": "selected_tags.csv",
+		"wd-v1-4-vit-tagger": "selected_tags.csv"
 	},
 	"external_data_path": {
 		"cl-tagger-v2-v2_00": "v2_00/model.onnx.data",

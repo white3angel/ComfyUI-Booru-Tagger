@@ -51,12 +51,18 @@ defaults["ortProviders"] = [p for p in _ORT_PRIORITY if p in available_providers
 if not defaults["ortProviders"]:
     defaults["ortProviders"] = ["CPUExecutionProvider"]
 
-folder_name = "wd14_tagger"
+folder_name = "booru_tagger"
 target_folder_path = os.path.join(folder_paths.models_dir, folder_name)
 if not os.path.exists(target_folder_path):
     os.makedirs(target_folder_path, exist_ok=True)
 folder_paths.add_model_folder_path(folder_name, target_folder_path)
 models_dir = folder_paths.get_folder_paths(folder_name)[0]
+
+# Directories where legacy flat files may exist (v1.x used "wd14_tagger" or extension-local "models")
+_LEGACY_MODEL_DIRS = [
+    os.path.join(folder_paths.models_dir, "wd14_tagger"),
+    get_ext_dir("models"),
+]
 known_models = list(config["model_url"].keys())
 
 log("Available ORT providers: " +
@@ -85,6 +91,45 @@ def prepare_external_data_file(model):
         # A hard link gives ONNX Runtime the embedded filename without duplicating
         # the multi-gigabyte external data file.
         os.link(source, alias)
+
+
+def _migrate_legacy_model(model_name, dest_model, dest_meta):
+    """Move legacy flat files into the nested directory structure (v1.x → v2.x).
+
+    Before v2.x, files were stored flat in one of:
+      - ComfyUI/models/wd14_tagger/<model>.onnx
+      - <extension>/models/<model>.onnx
+
+    After v2.x, files are stored nested:
+      - ComfyUI/models/booru_tagger/<model>/model.onnx
+    """
+    if os.path.exists(dest_model) and os.path.exists(dest_meta):
+        return  # Already migrated or downloaded fresh
+
+    # Scan all possible legacy locations
+    for legacy_dir in _LEGACY_MODEL_DIRS:
+        if not os.path.isdir(legacy_dir):
+            continue
+        legacy_model = os.path.join(legacy_dir, model_name + ".onnx")
+        if not os.path.exists(legacy_model):
+            continue
+
+        legacy_csv = os.path.join(legacy_dir, model_name + ".csv")
+        legacy_json = os.path.join(legacy_dir, model_name + ".json")
+
+        os.makedirs(os.path.dirname(dest_model), exist_ok=True)
+        if not os.path.exists(dest_model):
+            os.rename(legacy_model, dest_model)
+
+        for legacy_meta in (legacy_csv, legacy_json):
+            if os.path.exists(legacy_meta):
+                os.makedirs(os.path.dirname(dest_meta), exist_ok=True)
+                if not os.path.exists(dest_meta):
+                    os.rename(legacy_meta, dest_meta)
+                break
+
+        log(f"Migrated legacy files for {model_name} from {legacy_dir} to nested layout", "INFO", True)
+        return
 
 
 def wd_tag(wd_model: InferenceSession, img: Image.Image):
@@ -474,6 +519,9 @@ class LoadBooruTaggerModel(io.ComfyNode):
         if not rel_metadata_path:
             raise ValueError(f"Metadata path for {model_name} is not defined in models.json")
         meta_path = os.path.join(models_dir, rel_metadata_path)
+
+        # Migrate legacy flat files to nested structure (from versions < 2.x)
+        _migrate_legacy_model(model_name, name, meta_path)
 
         # Download if either the ONNX model or the metadata file is missing
         if not os.path.exists(name) or not os.path.exists(meta_path):
